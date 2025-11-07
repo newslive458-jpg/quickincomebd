@@ -1,0 +1,133 @@
+# main.py
+import os
+from flask import Flask, request, jsonify, render_template
+from models import init_db, SessionLocal, User, Withdraw
+from datetime import datetime
+from bot_worker import bot, start_polling
+import threading
+from sqlalchemy.exc import IntegrityError
+
+# env
+WEBAPP_URL = os.getenv("WEBAPP_URL", "https://earnquick-miniapp.onrender.com")
+ADMIN_ID = os.getenv("ADMIN_ID", "")
+MIN_WITHDRAW = int(os.getenv("MIN_WITHDRAW", "5000"))
+
+# init
+init_db()
+app = Flask(__name__, template_folder="templates", static_folder="static")
+
+@app.route("/")
+def index():
+    return render_template("index.html", WEBAPP_URL=WEBAPP_URL, MONETAG_ZONE_ID=os.getenv("MONETAG_ZONE_ID", "10070523"), MIN_WITHDRAW=MIN_WITHDRAW)
+
+# API: user data
+@app.get("/api/user_data")
+def api_user_data():
+    telegram_id = request.args.get("id")
+    username = request.args.get("username", "Guest")
+    if not telegram_id:
+        return jsonify(success=False, message="missing id"), 400
+    db = SessionLocal()
+    user = db.query(User).filter(User.id == str(telegram_id)).first()
+    if not user:
+        user = User(id=str(telegram_id), username=username, total_points=0, referral_count=0, is_admin=(str(telegram_id)==str(ADMIN_ID)))
+        db.add(user)
+        db.commit()
+    result = {
+        "id": user.id,
+        "username": user.username,
+        "total_points": user.total_points,
+        "referral_count": user.referral_count,
+        "is_admin": user.is_admin
+    }
+    db.close()
+    return jsonify(success=True, user=result)
+
+# API: add points (reward)
+@app.post("/api/add_points")
+def api_add_points():
+    data = request.get_json() or {}
+    telegram_id = str(data.get("telegramId") or data.get("telegram_id"))
+    points = int(data.get("points", 0))
+    if not telegram_id:
+        return jsonify(success=False, message="missing telegramId"), 400
+    db = SessionLocal()
+    user = db.query(User).filter(User.id == telegram_id).first()
+    if not user:
+        user = User(id=telegram_id, username="", total_points=0)
+        db.add(user)
+    user.total_points = (user.total_points or 0) + points
+    db.commit()
+    db.close()
+    return jsonify(success=True, total_points=user.total_points)
+
+# API: request withdraw
+@app.post("/api/request_withdraw")
+def api_request_withdraw():
+    data = request.get_json() or {}
+    telegram_id = str(data.get("telegramId") or data.get("telegram_id"))
+    points = int(data.get("points", 0))
+    account = data.get("account", "")
+    if not telegram_id or not account or points <= 0:
+        return jsonify(success=False, message="invalid data"), 400
+    db = SessionLocal()
+    user = db.query(User).filter(User.id == telegram_id).first()
+    if not user:
+        db.close()
+        return jsonify(success=False, message="user not found"), 404
+    if user.total_points < points:
+        db.close()
+        return jsonify(success=False, message="insufficient points"), 400
+    # deduct and create withdraw
+    user.total_points -= points
+    w = Withdraw(telegram_id=telegram_id, points=points, account=account, status="pending", created_at=datetime.utcnow())
+    db.add(w)
+    db.commit()
+    db.close()
+    # notify admin (non-blocking)
+    try:
+        import threading
+        def notify():
+            try:
+                bot.loop.create_task(bot.send_message(int(ADMIN_ID), f"New withdraw: {telegram_id} | {points} pts | {account}"))
+            except Exception:
+                pass
+        threading.Thread(target=notify).start()
+    except Exception:
+        pass
+    return jsonify(success=True, message="withdraw requested")
+
+# API: withdraw list (admin)
+@app.get("/api/withdraws")
+def api_withdraws():
+    db = SessionLocal()
+    items = db.query(Withdraw).order_by(Withdraw.created_at.desc()).all()
+    arr = []
+    for it in items:
+        arr.append({
+            "id": it.id,
+            "telegram_id": it.telegram_id,
+            "points": it.points,
+            "account": it.account,
+            "status": it.status,
+            "created_at": it.created_at.isoformat()
+        })
+    db.close()
+    return jsonify(success=True, withdraws=arr)
+
+# API: leaderboard
+@app.get("/api/leaderboard")
+def api_leaderboard():
+    db = SessionLocal()
+    users = db.query(User).order_by(User.total_points.desc()).limit(10).all()
+    arr = [{"id": u.id, "username": u.username, "points": u.total_points} for u in users]
+    db.close()
+    return jsonify(success=True, leaderboard=arr)
+
+if __name__ == "__main__":
+    # start aiogram polling in a separate thread
+    loop = bot.loop
+    t = threading.Thread(target=start_polling, args=(loop,), daemon=True)
+    t.start()
+    port = int(os.getenv("PORT", 5000))
+    app.run(host="0.0.0.0", port=port)
