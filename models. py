@@ -1,0 +1,34 @@
+# models.py
+from sqlalchemy import create_engine, Column, Integer, String, Boolean, DateTime
+from sqlalchemy.ext.declarative import declarative_base
+from sqlalchemy.orm import sessionmaker
+import os
+from datetime import datetime
+
+BASE_DIR = os.path.abspath(os.path.dirname(__file__))
+DB_URL = os.getenv("DATABASE_URL", "sqlite:///" + os.path.join(BASE_DIR, "data.db"))
+
+engine = create_engine(DB_URL, connect_args={"check_same_thread": False} if DB_URL.startswith("sqlite") else {})
+SessionLocal = sessionmaker(autocommit=False, autoflush=False, bind=engine)
+Base = declarative_base()
+
+class User(Base):
+    __tablename__ = "users"
+    id = Column(String, primary_key=True, index=True)   # telegram id as string
+    username = Column(String, nullable=True)
+    total_points = Column(Integer, default=0)
+    referral_count = Column(Integer, default=0)
+    is_admin = Column(Boolean, default=False)
+    created_at = Column(DateTime, default=datetime.utcnow)
+
+class Withdraw(Base):
+    __tablename__ = "withdraws"
+    id = Column(Integer, primary_key=True, index=True, autoincrement=True)
+    telegram_id = Column(String, nullable=False)
+    points = Column(Integer, nullable=False)
+    account = Column(String, nullable=False)
+    status = Column(String, default="pending")  # pending, approved, rejected
+    created_at = Column(DateTime, default=datetime.utcnow)
+
+def init_db():
+    Base.metadata.create_all(bind=engine)
