@@ -1,0 +1,218 @@
+<!-- templates/index.html -->
+<!doctype html>
+<html lang="bn">
+<head>
+  <meta charset="utf-8">
+  <meta name="viewport" content="width=device-width,initial-scale=1">
+  <title>EarnQuick — Watch Ads & Earn</title>
+  <!-- Tailwind CDN (production small) -->
+  <script src="https://cdn.tailwindcss.com"></script>
+  <meta name="theme-color" content="#0ea5a4">
+  <style>
+    /* small custom styling */
+    body { background:#0f172a; color:#e6eef8; font-family: Inter, ui-sans-serif, system-ui, -apple-system, "Segoe UI", Roboto, "Helvetica Neue", Arial; }
+    .glass { background: rgba(255,255,255,0.03); backdrop-filter: blur(6px); border: 1px solid rgba(255,255,255,0.04); }
+    .marquee { overflow:hidden; white-space:nowrap; }
+  </style>
+</head>
+<body class="min-h-screen flex flex-col items-center py-8">
+  <div class="w-full max-w-xl px-4">
+    <!-- top banner ad slot (iframe-based) -->
+    <div id="top-ad" class="mb-4 flex justify-center">
+      <!-- Placeholder for banner ad -->
+      <div class="w-full glass rounded-lg p-2 text-center">
+        <div id="top-ad-container" class="mx-auto">Loading banner…</div>
+      </div>
+    </div>
+
+    <header class="mb-4 text-center">
+      <h1 class="text-3xl font-extrabold text-white">EarnQuick</h1>
+      <p class="text-sm text-sky-200">Watch ads, collect points, withdraw via bKash/Nagad</p>
+    </header>
+
+    <main class="glass rounded-xl p-6 shadow-lg">
+      <div class="flex items-center justify-between mb-4">
+        <div>
+          <p class="text-xs text-slate-300">ইউজার</p>
+          <h2 id="username-display" class="text-lg font-semibold">Loading…</h2>
+        </div>
+        <div class="text-right">
+          <p class="text-xs text-slate-300">ব্যালেন্স</p>
+          <div id="points-display" class="text-2xl font-bold text-amber-400">0</div>
+        </div>
+      </div>
+
+      <div class="space-y-4">
+        <button id="watch-ad-btn" class="w-full bg-emerald-500 hover:bg-emerald-600 rounded-lg py-3 font-bold shadow">🎬 Watch Ad & Earn</button>
+
+        <div class="flex gap-3">
+          <button id="withdraw-btn" class="flex-1 py-2 rounded-lg bg-sky-600 hover:bg-sky-700">💸 Request Withdraw</button>
+          <button id="leaderboard-btn" class="py-2 px-4 rounded-lg bg-stone-700 hover:bg-stone-600">🏆 Leaderboard</button>
+        </div>
+
+        <div id="notice" class="text-xs text-slate-300 mt-2">Minimum withdraw: <span id="min-withdraw-display">{{ MIN_WITHDRAW }}</span> pts</div>
+      </div>
+    </main>
+
+    <!-- leaderboard modal -->
+    <div id="leaderboard-modal" class="fixed inset-0 z-50 hidden items-center justify-center bg-black/60">
+      <div class="bg-slate-900 rounded-xl p-4 w-full max-w-md">
+        <h3 class="font-bold text-lg mb-2">Leaderboard</h3>
+        <ul id="leaderboard-list" class="space-y-2 text-sm"></ul>
+        <div class="mt-4 text-right">
+          <button onclick="toggleLeaderboard(false)" class="px-4 py-2 rounded bg-amber-400 text-slate-900">Close</button>
+        </div>
+      </div>
+    </div>
+
+    <!-- bottom ad -->
+    <div id="bottom-ad" class="mt-6 flex justify-center">
+      <div class="w-full glass rounded-lg p-2 text-center">
+        <div id="bottom-ad-container">Loading banner…</div>
+      </div>
+    </div>
+
+    <footer class="text-center text-xs text-slate-400 mt-6">
+      EarnQuick • © <span id="year"></span>
+    </footer>
+  </div>
+
+  <!-- Monetag / LibTL / Custom ad SDK -->
+  <!-- Using libtl example (you said zone 10070523) -->
+  <script src="//libtl.com/sdk.js" data-zone="{{ MONETAG_ZONE_ID }}" data-sdk="show_{{ MONETAG_ZONE_ID }}"></script>
+
+  <script>
+    const WEBAPP_URL = "{{ WEBAPP_URL }}";
+    const MIN_WITHDRAW = {{ MIN_WITHDRAW }};
+    const TELEGRAM = window.Telegram ? window.Telegram.WebApp : null;
+
+    // initialize UI
+    document.getElementById('year').innerText = new Date().getFullYear();
+
+    function bnFormat(n){
+      try { return n.toLocaleString('bn-BD'); } catch(e){ return n; }
+    }
+
+    // load user data from telegram initData if available
+    function loadInitial() {
+      const user = TELEGRAM?.initDataUnsafe?.user;
+      if (user) {
+        document.getElementById('username-display').innerText = user.username || user.first_name || 'User';
+        // query backend to get latest points
+        fetch(`${WEBAPP_URL}/api/user_data?id=${user.id}&username=${user.username||user.first_name}`)
+          .then(r=>r.json()).then(data=>{
+            if (data.success) {
+              document.getElementById('points-display').innerText = bnFormat(data.user.total_points || 0);
+              if (data.user.is_admin) {
+                // show admin UI if wanted
+              }
+            }
+          }).catch(()=>{});
+      } else {
+        document.getElementById('username-display').innerText = 'Guest';
+      }
+    }
+
+    document.addEventListener('DOMContentLoaded', loadInitial);
+
+    // Reward flow using libtl SDK (show_XXXXX)
+    const ZONE = "{{ MONETAG_ZONE_ID }}";
+    const showFnName = `show_${ZONE}`;
+
+    async function showRewardedAd() {
+      const user = TELEGRAM?.initDataUnsafe?.user;
+      if (!user) { alert("Open the mini app from Telegram to earn."); return; }
+      const telegramId = user.id;
+      try {
+        // call ad show function provided by libtl (global)
+        if (typeof window[showFnName] === 'function') {
+          await window[showFnName]();
+        } else {
+          // fallback if SDK provides createAdHandler style
+          if (typeof createAdHandler === 'function') {
+            const ad = createAdHandler(ZONE);
+            await ad();
+          } else {
+            alert("Ad SDK not available.");
+            return;
+          }
+        }
+        // on success: grant reward
+        const rewardPoints = 50; // example reward
+        await fetch(`${WEBAPP_URL}/api/add_points`, {
+          method: 'POST',
+          headers: {'Content-Type':'application/json'},
+          body: JSON.stringify({ telegramId, points: rewardPoints })
+        });
+        // refresh UI
+        const resp = await fetch(`${WEBAPP_URL}/api/user_data?id=${telegramId}`);
+        const j = await resp.json();
+        if (j.success) document.getElementById('points-display').innerText = bnFormat(j.user.total_points);
+        alert(`🎉 আপনি ${rewardPoints} পয়েন্ট পেয়েছেন!`);
+      } catch (e) {
+        console.error(e);
+        alert("Ad failed or was skipped. No reward.");
+      }
+    }
+
+    document.getElementById('watch-ad-btn').addEventListener('click', showRewardedAd);
+
+    // Withdraw
+    document.getElementById('withdraw-btn').addEventListener('click', async () => {
+      const user = TELEGRAM?.initDataUnsafe?.user;
+      if (!user) { alert("Please open from Telegram."); return; }
+      const telegramId = user.id;
+      const points = parseInt(prompt("আপনি কত পয়েন্ট উইথড্র করতে চান? (পুরো সংখ্যা লিখুন)", `${MIN_WITHDRAW}`));
+      const account = prompt("আপনার পেমেন্ট অ্যাকাউন্ট (bkash/nagad) নম্বর দিন", "");
+      if (!points || !account) { alert("Invalid input."); return; }
+      if (points < MIN_WITHDRAW) { alert(`ন্যূনতম উইথড্র ${MIN_WITHDRAW} পয়েন্ট।`); return; }
+      try {
+        const resp = await fetch(`${WEBAPP_URL}/api/request_withdraw`, {
+          method: 'POST',
+          headers: {'Content-Type':'application/json'},
+          body: JSON.stringify({ telegramId, points, account })
+        });
+        const j = await resp.json();
+        if (j.success) {
+          alert("Withdraw request submitted!");
+          const r2 = await fetch(`${WEBAPP_URL}/api/user_data?id=${telegramId}`);
+          const j2 = await r2.json();
+          if (j2.success) document.getElementById('points-display').innerText = bnFormat(j2.user.total_points);
+        } else {
+          alert("Error: " + (j.message||""));
+        }
+      } catch (e) { alert("Network error."); }
+    });
+
+    // leaderboard
+    document.getElementById('leaderboard-btn').addEventListener('click', async () => {
+      toggleLeaderboard(true);
+      const ul = document.getElementById('leaderboard-list');
+      ul.innerHTML = 'Loading...';
+      try {
+        const resp = await fetch(`${WEBAPP_URL}/api/leaderboard`);
+        const j = await resp.json();
+        ul.innerHTML = '';
+        if (j.success) {
+          j.leaderboard.forEach((u, idx) => {
+            const li = document.createElement('li');
+            li.className = 'flex justify-between items-center';
+            li.innerHTML = `<div>#${idx+1} <strong>${u.username||u.id}</strong></div><div class="font-bold text-amber-400">${bnFormat(u.points)}</div>`;
+            ul.appendChild(li);
+          });
+        } else {
+          ul.innerHTML = 'No data';
+        }
+      } catch (e) {
+        ul.innerHTML = 'Error loading leaderboard';
+      }
+    });
+
+    function toggleLeaderboard(show){ document.getElementById('leaderboard-modal').style.display = show ? 'flex' : 'none'; }
+
+    // banner ad placeholders (you can replace with real iframe or libtl banner)
+    document.getElementById('top-ad-container').innerHTML = `<iframe src="about:blank" style="width:100%;height:90px;border:none;border-radius:8px;"></iframe>`;
+    document.getElementById('bottom-ad-container').innerHTML = `<iframe src="about:blank" style="width:100%;height:90px;border:none;border-radius:8px;"></iframe>`;
+  </script>
+</body>
+</html>
